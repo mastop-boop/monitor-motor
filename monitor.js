@@ -292,7 +292,13 @@ function drawChart(cv, o){
   if (!w || !h) return;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
   const g = cv.getContext('2d'); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,w,h);
-  const L = 46, R = w - 8, T = 8, B = h - 22, {t0, t1, lo, hi, data} = o;
+  const {t0, t1, lo, hi, data} = o;
+  // tipografía y márgenes escalados al ancho de la gráfica
+  const big = w >= 560, fs = big ? 14 : 12, ft = big ? 15 : 13, NY = 5;
+  g.font = `${fs}px system-ui, sans-serif`;
+  let wl = 0;
+  for (let i = 0; i <= NY; i++) wl = Math.max(wl, g.measureText(niceTick(lo + (hi - lo) * i / NY) + (o.unit ? ' ' + o.unit : '')).width);
+  const L = Math.max(50, Math.ceil(wl) + 14), R = w - 14, T = 12, B = h - (ft + 20);
   const X = t => L + (t - t0) * (R - L) / (t1 - t0);
   const Y = v => B - (Math.min(hi, Math.max(lo, v)) - lo) * (B - T) / (hi - lo);
   // zonas de severidad
@@ -302,28 +308,37 @@ function drawChart(cv, o){
   }
   g.globalAlpha = 1;
   // rejilla
-  g.font = '11px system-ui, sans-serif'; g.lineWidth = 1; g.textAlign = 'right';
-  for (let i = 0; i <= 4; i++) {
-    const v = lo + (hi - lo) * i / 4, y = Math.round(Y(v)) + .5;
+  g.font = `${fs}px system-ui, sans-serif`; g.lineWidth = 1; g.textAlign = 'right';
+  for (let i = 0; i <= NY; i++) {
+    const v = lo + (hi - lo) * i / NY, y = Math.round(Y(v)) + .5;
     g.strokeStyle = C.grid; g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke();
-    g.fillStyle = C.muted; g.fillText(niceTick(v) + (o.unit ? ' ' + o.unit : ''), L - 5, y + 4);
+    g.fillStyle = C.muted; g.fillText(niceTick(v) + (o.unit ? ' ' + o.unit : ''), L - 8, y + fs * 0.35);
   }
   // líneas umbral
   for (const ln of o.lines || []) {
     if (ln.v < lo || ln.v > hi) continue;
     const y = Math.round(Y(ln.v)) + .5;
     g.strokeStyle = ln.color; g.setLineDash([5,4]); g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke(); g.setLineDash([]);
-    g.fillStyle = ln.color; g.textAlign = 'left'; g.fillText(ln.label, L + 4, y - 4); g.textAlign = 'right';
+    g.fillStyle = ln.color; g.textAlign = 'left'; g.font = `600 ${fs}px system-ui, sans-serif`; g.fillText(ln.label, L + 6, y - 6);
+    g.font = `${fs}px system-ui, sans-serif`; g.textAlign = 'right';
   }
-  // eje tiempo
-  g.fillStyle = C.muted; g.textAlign = 'left'; g.fillText(hms(t0), L, h - 5);
-  g.textAlign = 'center'; g.fillText(hms((t0 + t1) / 2), (L + R) / 2, h - 5);
-  g.textAlign = 'right'; g.fillText(st.paused ? hms(t1) + ' (pausa)' : hms(t1), R, h - 5);
+  // eje de tiempo: hora grande con marcas verticales
+  const NT = w >= 900 ? 6 : big ? 4 : 2;
+  g.font = `600 ${ft}px system-ui, sans-serif`;
+  for (let i = 0; i <= NT; i++) {
+    const t = t0 + (t1 - t0) * i / NT, x = Math.round(X(t)) + .5;
+    if (i > 0 && i < NT) { g.strokeStyle = C.grid; g.beginPath(); g.moveTo(x, T); g.lineTo(x, B); g.stroke(); }
+    g.strokeStyle = C.line; g.beginPath(); g.moveTo(x, B); g.lineTo(x, B + 5); g.stroke();
+    g.textAlign = i === 0 ? 'left' : i === NT ? 'right' : 'center';
+    g.fillStyle = i === NT ? C.ink : C.muted;
+    g.fillText(i === NT && st.paused ? hms(t) + ' (pausa)' : hms(t), x, h - 8);
+  }
+  g.font = `${fs}px system-ui, sans-serif`;
   // series
   const step = Math.max(1, Math.floor(data.length / ((R - L) * 1.5)));
   g.save(); g.beginPath(); g.rect(L, T - 2, R - L, B - T + 4); g.clip();
   for (const s of o.series) {
-    g.strokeStyle = s.color; g.lineWidth = 1.8; g.lineJoin = 'round'; g.beginPath();
+    g.strokeStyle = s.color; g.lineWidth = big ? 2.6 : 2.1; g.lineJoin = 'round'; g.lineCap = 'round'; g.beginPath();
     let pen = false, prev = 0;
     for (let i = 0; i < data.length; i += step) {
       const r = data[i], v = s.get(r);
@@ -349,15 +364,15 @@ function drawChart(cv, o){
     for (const s of o.series) {
       const v = s.get(r);
       lines.push(`${s.label}: ${fin(v) ? v.toFixed(s.dec ?? 2) : '—'} ${o.unit || ''}`);
-      if (fin(v)) { g.fillStyle = s.color; g.beginPath(); g.arc(x, Y(v), 3.5, 0, 7); g.fill(); }
+      if (fin(v)) { g.fillStyle = s.color; g.beginPath(); g.arc(x, Y(v), 4.5, 0, 7); g.fill(); }
     }
-    g.font = '12px system-ui, sans-serif';
-    const bw = Math.max(...lines.map(l => g.measureText(l).width)) + 16, bh = lines.length * 16 + 8;
+    g.font = `600 ${fs}px system-ui, sans-serif`;
+    const lh = fs + 6, bw = Math.max(...lines.map(l => g.measureText(l).width)) + 20, bh = lines.length * lh + 10;
     let bx = x + 10; if (bx + bw > R) bx = x - bw - 10;
     g.fillStyle = C.panel; g.strokeStyle = C.line; g.globalAlpha = .95;
     g.beginPath(); g.roundRect ? g.roundRect(bx, T + 4, bw, bh, 6) : g.rect(bx, T + 4, bw, bh); g.fill(); g.stroke(); g.globalAlpha = 1;
     g.textAlign = 'left';
-    lines.forEach((l,i) => { g.fillStyle = i === 0 ? C.muted : (o.series[i-1].color); g.fillText(l, bx + 8, T + 20 + i * 16); });
+    lines.forEach((l,i) => { g.fillStyle = i === 0 ? C.muted : (o.series[i-1].color); g.fillText(l, bx + 10, T + 4 + lh + i * lh); });
   }
 }
 

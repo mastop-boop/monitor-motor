@@ -65,7 +65,7 @@ button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{ou
 .chead{display:flex;justify-content:space-between;align-items:flex-start;gap:10px;margin-bottom:12px}
 .kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}
 .row2{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(0,1fr);gap:14px;margin-top:14px}
-.row2.charts{grid-template-columns:1fr 1fr}
+.row2.charts{grid-template-columns:minmax(0,1fr)}
 .row2.bottom{grid-template-columns:minmax(0,1.3fr) minmax(0,1fr)}
 
 .badge{display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:99px;font-size:11px;font-weight:800;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap;color:var(--c);background:color-mix(in srgb,var(--c) 16%,transparent);border:1px solid color-mix(in srgb,var(--c) 40%,transparent)}
@@ -156,7 +156,11 @@ button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{ou
 .diag[data-lv=ok] #vAlign{color:var(--ok)}
 .legend{display:flex;gap:12px;align-items:center;font-size:12px;flex-wrap:wrap;margin-bottom:4px}
 
-.chart{display:block;width:100%;height:220px;cursor:crosshair}
+.chart{display:block;width:100%;height:clamp(300px,44vh,480px);cursor:crosshair}
+.charts .card{padding:18px 20px 14px}
+.charts .chead h2{font-size:21px}
+.charts .legend{font-size:15px;gap:16px;margin:0}
+.charts .muted.small{font-size:14px}
 
 /* toolbar */
 .toolbar{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-top:14px;padding:12px 16px}
@@ -194,6 +198,7 @@ input,select{background:var(--panel-2);border:1px solid var(--line);color:var(--
   .cfg fieldset{grid-template-columns:1fr}
   .axis{grid-template-columns:70px 1fr 60px}
   .val strong{font-size:34px}
+  .chart{height:280px}
   .clock{display:none}
 }
 @media print{

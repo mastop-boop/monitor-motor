@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Monitor de Condición · Motor de inducción</title>
-<link rel="stylesheet" href="monitor.css?v=1">
+<link rel="stylesheet" href="monitor.css?v=2">
 </head>
 <body>
 
@@ -203,9 +203,6 @@
         <div><span class="eyebrow">Diagnóstico de eje</span><strong id="vAlign">Sin datos</strong></div>
         <div><span class="eyebrow">Inclinación X · Y · Z</span><strong id="vAng">—</strong></div>
       </div>
-
-      <div class="legend"><b class="cx">● X</b><b class="cy">● Y</b><b class="cz">● Z</b><span class="muted">mg · franjas = zonas de severidad</span></div>
-      <canvas id="cV" class="chart" aria-label="Vibración por eje en el tiempo"></canvas>
     </article>
   </section>
 
@@ -231,6 +228,11 @@
   </section>
 
   <section class="row2 charts">
+    <article class="card">
+      <div class="chead"><div><span class="eyebrow">Tendencia · ADXL345</span><h2>Vibración por eje</h2></div>
+        <div class="legend"><b class="cx">● X</b><b class="cy">● Y</b><b class="cz">● Z</b><span class="muted">mg · franjas = zonas de severidad</span></div></div>
+      <canvas id="cV" class="chart" aria-label="Vibración por eje en el tiempo"></canvas>
+    </article>
     <article class="card">
       <div class="chead"><div><span class="eyebrow">Tendencia</span><h2>Temperatura del bobinado</h2></div><span class="muted small" id="tStats"></span></div>
       <canvas id="cT" class="chart" aria-label="Temperatura en el tiempo"></canvas>
@@ -290,6 +292,6 @@
   </footer>
 </main>
 
-<script src="monitor.js?v=1"></script>
+<script src="monitor.js?v=2"></script>
 </body>
 </html>
