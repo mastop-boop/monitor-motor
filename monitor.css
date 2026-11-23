@@ -157,6 +157,17 @@ button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible{ou
 .legend{display:flex;gap:12px;align-items:center;font-size:12px;flex-wrap:wrap;margin-bottom:4px}
 
 .chart{display:block;width:100%;height:clamp(300px,44vh,480px);cursor:crosshair}
+:root{--plot:#0b1620;--onda:#ff4d4d;--envol:#ff9b9b}
+[data-theme=light]{--plot:#ffffff;--onda:#c00000;--envol:#e58b8b}
+.onda-ctrl{display:flex;gap:8px 10px;flex-wrap:wrap;align-items:center}
+.onda-ctrl[hidden],.chart[hidden]{display:none}
+.onda-ctrl select{font-size:14px}
+.onda-ctrl label{display:inline-flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
+.wstats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin-top:12px}
+.wstats div{background:var(--panel-2);border:1px solid var(--line);border-radius:10px;padding:8px 12px}
+.wstats strong{display:block;font-size:20px;font-variant-numeric:tabular-nums;margin-top:2px}
+.charts .note{font-size:13px}
+@media(max-width:700px){.wstats{grid-template-columns:repeat(2,minmax(0,1fr))}}
 .charts .card{padding:18px 20px 14px}
 .charts .chead h2{font-size:21px}
 .charts .legend{font-size:15px;gap:16px;margin:0}

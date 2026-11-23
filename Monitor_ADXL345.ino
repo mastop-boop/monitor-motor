@@ -15,6 +15,11 @@ const char* CANAL="uni-lab/e7b914ca52/adxl345";
 constexpr float RANGO_A=50.0f, RESISTENCIA_OHM=119.0f;
 constexpr int PASADAS=2;
 const char* CANAL_OLED="uni-lab/e7b914ca52/adxl345/oled";
+// Lotes de corriente RMS muestreada cada 2 ms (tópico propio, no altera el formato principal)
+const char* CANAL_I="uni-lab/e7b914ca52/adxl345/corriente";
+constexpr int LOTE_MAX=64;
+struct Lote { uint32_t seq=0; uint64_t t0=0; int n=0; float v[LOTE_MAX]; };
+Lote loteListo; volatile bool hayLote=false;
 constexpr bool NTC_A_GND=true;
 Preferences ajustes;
 uint8_t pagina=0;
@@ -186,6 +191,7 @@ void evaluarMotor(Datos& m, float nivel){
 
 void adquirir(void*){
   Datos m;
+  Lote lote;
   uint32_t intento=millis()-1000,adc=millis()-5,ntc=millis()-250,envio=millis();
   float suma=0,maximo=NAN,sumaMv=0;
   uint32_t diagnostico=0;
@@ -210,15 +216,17 @@ void adquirir(void*){
       rgbLedWrite(PIN_RGB,luz && color==0?40:0,luz && color==1?40:0,
                          luz && color==2?40:0);
     }
-    if(ahora-adc>=5){
+    if(ahora-adc>=2){                       // corriente cada 2 ms (500 muestras/s)
       adc=ahora; intentosADC++;
-      float mv=analogReadMilliVolts(4), lazo=mv/RESISTENCIA_OHM;
+      float mv=analogReadMilliVolts(4), lazo=mv/RESISTENCIA_OHM, i=NAN;
       sumaMv+=mv;
       if(lazo>=3.6f && lazo<=21.0f){
-        float i=fmaxf(0,(lazo-4)/16)*(RANGO_A/PASADAS);
+        i=fmaxf(0,(lazo-4)/16)*(RANGO_A/PASADAS);
         suma+=i; validas++;
         maximo=fmaxf(maximo,i); m.pico=fmaxf(m.pico,i);
       }
+      if(lote.n==0) lote.t0=esp_timer_get_time()/1000ULL;
+      if(lote.n<LOTE_MAX) lote.v[lote.n++]=i;
     }
     if(ahora-ntc>=250){ntc=ahora; m.temp=temperatura();}
     if(ahora-envio>=100){
@@ -252,9 +260,12 @@ void adquirir(void*){
       }
       if(valida) anguloListo=true;
       evaluarMotor(m,sqrtf(norma2));
+      lote.seq=m.seq;
       portENTER_CRITICAL(&lockDatos);
       datos=m;
+      loteListo=lote; hayLote=true;
       portEXIT_CRITICAL(&lockDatos);
+      lote.n=0;
     }
     delay(1);
   }
@@ -352,7 +363,8 @@ void loop(){
   static uint8_t imagen[1024];
   if(WiFi.status()==WL_CONNECTED){
     if(!mqtt.connected() && millis()-intento>=5000){
-      intento=millis();if(mqtt.connect(cliente)) versionEnviada=0;
+      intento=millis();
+      if(mqtt.connect(cliente)){ red.setNoDelay(true); versionEnviada=0; }   // sin Nagle: menor latencia
     }
     if(mqtt.connected()){
       mqtt.loop();
@@ -368,6 +380,17 @@ void loop(){
           sesion,(unsigned long)m.seq,(unsigned long long)m.ms,
           m.xyz[0],m.xyz[1],m.xyz[2],m.actual,m.pico100,m.pico,m.temp,m.voltios,m.angulo[0],m.angulo[1],m.angulo[2],m.fase,m.estado);
         if(mqtt.publish(CANAL,msg,false)) enviado=m.seq;
+      }
+      // lote de corriente: sesion,seq,t0_ms,dt_ms,i1,i2,...  (A; "nan" si el lazo está fuera de 3,6-21 mA)
+      portENTER_CRITICAL(&lockDatos);
+      bool tengoLote=hayLote; static Lote L; if(tengoLote){ L=loteListo; hayLote=false; }
+      portEXIT_CRITICAL(&lockDatos);
+      if(tengoLote && L.n>0){
+        static char li[700];
+        int p=snprintf(li,sizeof(li),"%s,%lu,%llu,2",sesion,(unsigned long)L.seq,(unsigned long long)L.t0);
+        for(int k=0;k<L.n && p<(int)sizeof(li)-10;k++)
+          p+=isfinite(L.v[k])?snprintf(li+p,sizeof(li)-p,",%.2f",L.v[k]):snprintf(li+p,sizeof(li)-p,",nan");
+        mqtt.publish(CANAL_I,li,false);
       }
       if(enviarImagen && mqtt.publish(CANAL_OLED,imagen,sizeof(imagen),false)){
         versionEnviada=version; ultimoOLED=millis();

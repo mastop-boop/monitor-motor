@@ -8,6 +8,7 @@
 const $ = id => document.getElementById(id);
 const fin = Number.isFinite;
 const TOPIC = 'uni-lab/e7b914ca52/adxl345';
+const TOPIC_I = TOPIC + '/corriente';
 const BROKER = 'wss://test.mosquitto.org:8081/mqtt';
 const MAX_ROWS = 300000;               // ~8 h a 10 muestras/s
 const ESTADOS_FW = ['Calibrando','En reposo','Sin referencia','Fase incierta','Motor normal (estimado)',
@@ -55,7 +56,7 @@ const fileStamp = () => { const d = new Date();
 const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 let C = {};
 function readColors(){
-  for (const k of ['ink','muted','grid','line','panel','cx','cy','cz','ct','ci','ok','warn','alarm','crit']) C[k] = cssVar('--'+k);
+  for (const k of ['ink','muted','grid','line','panel','cx','cy','cz','ct','ci','ok','warn','alarm','crit','plot','onda','envol']) C[k] = cssVar('--'+k);
 }
 function setBadge(el, txt, lv){ el.textContent = txt; el.className = 'badge lv-' + lv; }
 
@@ -376,6 +377,139 @@ function drawChart(cv, o){
   }
 }
 
+/* ============================================================
+   Corriente: lotes del JXK-10 cada 2 ms y onda sinusoidal equivalente
+   El JXK-10 entrega el valor RMS (lazo 4-20 mA en DC). La onda que se dibuja
+   es i(t) = √2 · I_RMS(t) · sen(2π·f·t): amplitud medida, forma sinusoidal ideal.
+   ============================================================ */
+const W = {pts:[], cap:null, caps:[], quiet:0, lastT:-1, llegada:0, vista:'arranque', ven:1000, f:60};
+function onLote(t0, dt, vals){
+  if (W.lastT >= 0 && t0 < W.lastT - 1000) { W.pts.length = 0; W.quiet = 0; W.lastT = -1; W.cap = null; }   // reinicio del ESP32 / cambio de fuente
+  vals.forEach((v, k) => {
+    const t = t0 + k * dt; if (t <= W.lastT) return;
+    W.pts.push({t, v}); W.lastT = t;
+    // disparo automático: motor quieto ≥ 200 ms y la corriente supera 0,6 A
+    if (fin(v) && v < 0.3) W.quiet += dt; else if (fin(v) && v >= 0.6 && W.quiet >= 200 && !W.cap) iniciarCaptura(t, true);
+    if (fin(v) && v >= 0.3) W.quiet = 0;
+    if (W.cap) { if (t <= W.cap.fin) W.cap.pts.push({t, v}); else cerrarCaptura(); }
+  });
+  while (W.pts.length && W.pts[0].t < W.lastT - 60000) W.pts.shift();
+  W.llegada = performance.now(); dirty = true;
+}
+function iniciarCaptura(t, auto){
+  const pre = 10;
+  W.cap = {trig:t, ini:t - pre, fin:t + 3000, auto, ts:Date.now(), pts:W.pts.filter(p => p.t >= t - pre && p.t <= t)};
+  setConn(auto ? '● Arranque detectado · capturando corriente' : '● Capturando corriente', 'live');
+}
+function cerrarCaptura(){
+  const c = W.cap; W.cap = null;
+  if (st.mode === 'demo') setConn('● Simulación', 'demo'); else status();
+  const v = c.pts.map(p => p.v).filter(fin);
+  if (!v.length) return;
+  const reg = c.pts.filter(p => p.t >= c.fin - 500).map(p => p.v).filter(fin);
+  c.imax = Math.max(...v); c.ireg = reg.length ? reg.reduce((a, b) => a + b, 0) / reg.length : NaN;
+  c.tmax = c.pts.find(p => p.v === c.imax).t - c.trig;
+  W.caps.unshift(c); if (W.caps.length > 6) W.caps.pop();
+  pintarCapturas(0);
+  logEvent('Corriente', c.auto ? 'Arranque' : 'Captura', 'ok',
+    `${c.auto ? 'Arranque registrado' : 'Captura manual'}: I RMS máx ${c.imax.toFixed(2)} A a ${c.tmax.toFixed(0)} ms` + (fin(c.ireg) ? ` · régimen ${c.ireg.toFixed(2)} A` : ''));
+}
+function pintarCapturas(sel){
+  $('ondaCap').innerHTML = W.caps.length ? W.caps.map((c, i) => `<option value="${i}">${hms(c.ts)} · ${c.auto ? 'arranque' : 'manual'} · ${c.imax.toFixed(2)} A</option>`).join('') : '<option>Sin capturas</option>';
+  $('ondaCap').value = String(sel); $('dlOnda').disabled = !W.caps.length; mostrarStats(); dirty = true;
+}
+function mostrarStats(){
+  const c = W.caps[Number($('ondaCap').value) || 0];
+  $('wPico').textContent = c ? (Math.SQRT2 * c.imax).toFixed(2) + ' A' : '—';
+  $('wMax').textContent = c ? `${c.imax.toFixed(2)} A · ${c.tmax.toFixed(0)} ms` : '—';
+  $('wReg').textContent = c && fin(c.ireg) ? c.ireg.toFixed(2) + ' A' : '—';
+  $('wRel').textContent = c && fin(c.ireg) && c.ireg > 0.05 ? (c.imax / c.ireg).toFixed(1) + ' ×' : '—';
+}
+function irmsEn(pts, t){                       // interpolación lineal del RMS medido
+  let a = 0, b = pts.length - 1;
+  if (b < 0 || t < pts[0].t || t > pts[b].t) return NaN;
+  while (b - a > 1) { const m = (a + b) >> 1; pts[m].t <= t ? a = m : b = m; }
+  const p = pts[a], q = pts[b];
+  if (!fin(p.v) || !fin(q.v)) return NaN;
+  return q.t === p.t ? p.v : p.v + (q.v - p.v) * (t - p.t) / (q.t - p.t);
+}
+function pasoBonito(r){ const e = Math.pow(10, Math.floor(Math.log10(r))), m = r / e; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e; }
+function dibujarOnda(cv){
+  const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+  const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  const big = w >= 560, fs = big ? 14 : 12, ft = big ? 15 : 13;
+  // datos de la vista
+  let pts, a, b, ref, rel;
+  if (W.vista === 'vivo') {
+    pts = W.pts; if (!pts.length) return vacio(g, w, h, fs, 'Esperando lotes de corriente del ESP32…');
+    // desplazamiento suave: se dibuja con 120 ms de retardo respecto al último lote
+    b = Math.min(W.lastT, W.lastT - 120 + (performance.now() - W.llegada)); a = b - W.ven; ref = 0; rel = b;
+  } else {
+    const c = W.cap && W.vista === 'arranque' && !W.caps.length ? W.cap : W.caps[Number($('ondaCap').value) || 0] || W.cap;
+    if (!c) return vacio(g, w, h, fs, 'Esperando un arranque del motor… (o pulse «Capturar ahora»)');
+    pts = c.pts; a = c.trig - 10; b = c.trig + W.ven; ref = c.trig; rel = c.trig;
+  }
+  const N = Math.min(24000, Math.max(800, Math.ceil((b - a) / (1000 / W.f / 24))));   // ≥ 24 puntos por ciclo
+  const ts = new Float64Array(N + 1), ys = new Float64Array(N + 1), env = new Float64Array(N + 1);
+  let amp = 0;
+  for (let k = 0; k <= N; k++) {
+    const t = a + (b - a) * k / N, r = irmsEn(pts, t);
+    ts[k] = t; env[k] = fin(r) ? Math.SQRT2 * r : NaN;
+    ys[k] = fin(r) ? env[k] * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN;
+    if (fin(env[k])) amp = Math.max(amp, env[k]);
+  }
+  const hi = Math.max(1, Math.ceil(amp * 1.12 / pasoBonito(amp * 1.12 / 3 || 1)) * pasoBonito(amp * 1.12 / 3 || 1)), lo = -hi;
+  g.font = `${fs}px system-ui, sans-serif`;
+  const L = Math.max(54, g.measureText(`-${hi} A`).width + 16), R = w - 16, T = 14, B = h - (ft + 22);
+  const X = t => L + (t - a) * (R - L) / (b - a), Y = v => B - (v - lo) * (B - T) / (hi - lo);
+  // área de trazado
+  g.fillStyle = C.plot; g.fillRect(L, T, R - L, B - T);
+  const pasoY = pasoBonito((hi - lo) / 6);
+  g.lineWidth = 1; g.textAlign = 'right';
+  for (let v = Math.ceil(lo / pasoY) * pasoY; v <= hi + 1e-9; v += pasoY) {
+    const y = Math.round(Y(v)) + .5;
+    g.strokeStyle = Math.abs(v) < 1e-9 ? C.muted : C.grid; g.lineWidth = Math.abs(v) < 1e-9 ? 1.5 : 1;
+    g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke();
+    g.fillStyle = C.muted; g.fillText(niceTick(v), L - 8, y + fs * .35);
+  }
+  g.fillStyle = C.ink; g.font = `700 ${ft}px system-ui, sans-serif`; g.textAlign = 'left'; g.fillText('A', 8, T + ft);
+  const pasoX = pasoBonito((b - a) / (big ? 12 : 6));
+  g.font = `600 ${ft}px system-ui, sans-serif`;
+  for (let t = Math.ceil((a - rel) / pasoX) * pasoX; t <= b - rel + 1e-9; t += pasoX) {
+    const x = Math.round(X(t + rel)) + .5;
+    g.strokeStyle = C.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(x, T); g.lineTo(x, B); g.stroke();
+    g.fillStyle = C.muted; g.textAlign = 'center'; g.fillText(String(Math.round(t)), x, h - 10);
+  }
+  g.fillStyle = C.ink; g.textAlign = 'right'; g.fillText('ms', R, T - 2 > ft ? T - 2 : h - 10 - ft - 2);
+  g.strokeStyle = C.line; g.lineWidth = 1; g.strokeRect(L + .5, T + .5, R - L - 1, B - T - 1);
+  // envolvente ±√2·I_RMS medida
+  g.save(); g.beginPath(); g.rect(L, T, R - L, B - T); g.clip();
+  g.setLineDash([6, 5]); g.strokeStyle = C.envol; g.lineWidth = 1.4;
+  for (const s of [1, -1]) { g.beginPath(); let pen = false;
+    for (let k = 0; k <= N; k++) { if (!fin(env[k])) { pen = false; continue; } const x = X(ts[k]), y = Y(s * env[k]); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; } g.stroke(); }
+  g.setLineDash([]);
+  // onda
+  g.strokeStyle = C.onda; g.lineWidth = big ? 2.8 : 2.2; g.lineJoin = 'round'; g.beginPath(); let pen = false;
+  for (let k = 0; k <= N; k++) { if (!fin(ys[k])) { pen = false; continue; } const x = X(ts[k]), y = Y(ys[k]); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
+  g.stroke(); g.restore();
+  // cursor
+  const hx = hover[cv.id];
+  if (hx != null && hx >= L && hx <= R) {
+    const t = a + (hx - L) * (b - a) / (R - L), r = irmsEn(pts, t), i = fin(r) ? Math.SQRT2 * r * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN;
+    g.strokeStyle = C.muted; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(hx, T); g.lineTo(hx, B); g.stroke(); g.setLineDash([]);
+    if (fin(i)) { g.fillStyle = C.onda; g.beginPath(); g.arc(hx, Y(i), 4.5, 0, 7); g.fill(); }
+    const txt = [`${(t - rel).toFixed(1)} ms`, `i equivalente: ${fmt(i, 2)} A`, `I RMS medida: ${fmt(r, 2)} A`];
+    g.font = `600 ${fs}px system-ui, sans-serif`;
+    const lh = fs + 6, bw = Math.max(...txt.map(l => g.measureText(l).width)) + 20, bh = txt.length * lh + 10;
+    let bx = hx + 12; if (bx + bw > R) bx = hx - bw - 12;
+    g.globalAlpha = .95; g.fillStyle = C.panel; g.strokeStyle = C.line; g.beginPath(); g.roundRect ? g.roundRect(bx, T + 6, bw, bh, 6) : g.rect(bx, T + 6, bw, bh); g.fill(); g.stroke(); g.globalAlpha = 1;
+    g.textAlign = 'left'; txt.forEach((l, k) => { g.fillStyle = k === 0 ? C.muted : k === 1 ? C.onda : C.ink; g.fillText(l, bx + 10, T + 6 + lh + k * lh); });
+  }
+}
+function vacio(g, w, h, fs, txt){ g.fillStyle = C.muted; g.font = `${fs + 2}px system-ui, sans-serif`; g.textAlign = 'center'; g.fillText(txt, w / 2, h / 2); }
+
 function drawAll(){
   const [t0, t1] = windowRange();
   const data = rows.slice(lowerBound(rows, t0 - 1000), lowerBound(rows, t1 + 1));
@@ -397,17 +531,19 @@ function drawAll(){
 
   const [iMin, iMax] = ext(r => r.I);
   const pct = data.some(r => r.unit === '%');
-  drawChart($('cI'), {t0, t1, data, lo:0, hi: pct ? 100 : Math.max(cfg.iNom * 1.5, fin(iMax) ? iMax * 1.15 : 1), unit: pct ? '%' : 'A',
+  if (W.vista !== 'rms') dibujarOnda($('cW'));
+  else drawChart($('cI'), {t0, t1, data, lo:0, hi: pct ? 100 : Math.max(cfg.iNom * 1.5, fin(iMax) ? iMax * 1.15 : 1), unit: pct ? '%' : 'A',
     lines: pct || !(cfg.iNom > 0) ? [] : [{v:cfg.iNom,color:C.warn,label:`Nominal ${cfg.iNom} A`}],
     series:[{label:'I',color:C.ci,get:r=>r.I,dec:2}]});
   $('iStats').textContent = fin(iMin) ? `mín ${iMin.toFixed(2)} · máx ${iMax.toFixed(2)} ${pct ? '%' : 'A'}` : '';
 }
 let lastDraw = 0;
 function frame(ts){
-  if ((dirty || (!st.paused && rows.length)) && ts - lastDraw > 90) { dirty = false; lastDraw = ts; drawAll(); }
+  // tiempo real: ~30 cuadros por segundo con desplazamiento continuo del eje de tiempo
+  if ((dirty || (!st.paused && (rows.length || W.pts.length))) && ts - lastDraw > 30) { dirty = false; lastDraw = ts; drawAll(); }
   requestAnimationFrame(frame);
 }
-for (const id of ['cV','cT','cI']) {
+for (const id of ['cV','cT','cI','cW']) {
   const cv = $(id);
   cv.addEventListener('pointermove', e => { hover[id] = e.offsetX; dirty = true; });
   cv.addEventListener('pointerleave', () => { delete hover[id]; dirty = true; });
@@ -435,9 +571,12 @@ function mqttConnect(){
       if (p + size > a.length) { pending = a.slice(start); return; }
       const d = a.subarray(p, p + size); p += size;
       const type = hd >> 4;
-      if (type === 2) { if (d[1] !== 0) { sock.close(); return; } sock.send(packet(130, [0, 1, ...field(TOPIC), 0])); }
+      if (type === 2) { if (d[1] !== 0) { sock.close(); return; } sock.send(packet(130, [0, 1, ...field(TOPIC), 0, ...field(TOPIC_I), 0])); }
       if (type === 9) { if (d[2] === 128) { sock.close(); return; } subscribed = true; setConn('Esperando al ESP32…', 'warn'); }
-      if (type === 3 && !(hd & 1)) { const n = (d[0] << 8) + d[1]; if (dec.decode(d.subarray(2, 2 + n)) === TOPIC) parseMsg(dec.decode(d.subarray(2 + n))); }
+      if (type === 3 && !(hd & 1)) {
+        const n = (d[0] << 8) + d[1], tp = dec.decode(d.subarray(2, 2 + n)), txt = dec.decode(d.subarray(2 + n));
+        if (tp === TOPIC) parseMsg(txt); else if (tp === TOPIC_I) parseLote(txt);
+      }
     }
     pending = new Uint8Array(0);
   };
@@ -468,6 +607,16 @@ function parseMsg(s){
     fase: full ? n(f[15]) : null, estado: full ? n(f[16]) : null});
 }
 
+// lote de corriente: sesion,seq,t0_ms,dt_ms,i1,i2,...
+function parseLote(s){
+  if (st.mode !== 'live') return;
+  const f = s.trim().split(',');
+  if (f.length < 5 || !/^[a-f0-9]{8}$/.test(f[0])) return;
+  const t0 = Number(f[2]), dt = Number(f[3]);
+  if (!fin(t0) || !(dt > 0)) return;
+  onLote(t0, dt, f.slice(4).map(v => /nan|inf/i.test(v) || v === '' ? NaN : Number(v)));
+}
+
 /* ---------- simulador (modo Demo) ---------- */
 const SCEN = {
   normal:        {I:1.6, T:48,  v:[3.0, 5.0, 2.4],  est:4, txt:'Operación normal'},
@@ -485,8 +634,20 @@ function simStep(){
   const P = SCEN[key];
   $('scenNow').textContent = sim.scen === 'auto' ? `Fase actual: ${P.txt}` : '';
   sim.T += (P.T - sim.T) * (key === 'calentamiento' ? 0.012 : 0.006) + gauss() * 0.04;
-  sim.I += (P.I - sim.I) * 0.08;
-  const I = P.I ? Math.max(0, sim.I * (1 + 0.02 * Math.sin(sim.t / 700)) + gauss() * 0.02) : Math.max(0, sim.I);
+  // corriente cada 2 ms con arranque directo: pico ≈ 6 × régimen que decae (τ ≈ 160 ms)
+  const parado = P.I === 0 || sim.t < (sim.forzarParo || 0), lote = [];
+  for (let k = 0; k < 50; k++) {
+    const tt = sim.t - 100 + k * 2;
+    if (parado) { sim.on = false; sim.Ic = (sim.Ic || 0) * Math.exp(-2 / 40); }
+    else {
+      if (!sim.on) { sim.on = true; sim.tOn = tt; }
+      const e = tt - sim.tOn;
+      sim.Ic = P.I * (1 + 0.02 * Math.sin(tt / 700)) + 5 * P.I * Math.exp(-e / 160) * (1 - Math.exp(-e / 10)) + gauss() * 0.02;
+    }
+    lote.push(Math.max(0, sim.Ic));
+  }
+  onLote(sim.t - 100, 2, lote);
+  const I = lote.reduce((a, b) => a + b, 0) / lote.length;
   sim.v = sim.v.map((v,i) => v + (P.v[i] - v) * 0.1);
   const xyz = sim.v.map(v => v > 0.05 ? Math.max(0, v * (1 + 0.12 * gauss())) : 0);
   sim.peak = Math.max(sim.peak, I);
@@ -505,11 +666,37 @@ function setMode(mode){
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   $('demoBar').hidden = mode !== 'demo';
   clearInterval(sim.timer); sim.timer = null;
-  if (mode === 'demo') { mqttStop(); setConn('● Simulación', 'demo'); sim.timer = setInterval(simStep, 100); }
+  W.pts.length = 0; W.lastT = -1; W.quiet = 0; W.cap = null;
+  if (mode === 'demo') { mqttStop(); setConn('● Simulación', 'demo'); sim.forzarParo = sim.t + 800; sim.timer = setInterval(simStep, 100); }
   else { st.lastAt = 0; mqttConnect(); }
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.onclick = () => st.mode !== b.dataset.mode && setMode(b.dataset.mode));
-$('scenario').onchange = e => { sim.scen = e.target.value; if (sim.scen !== 'auto') sim.t = 0; };
+$('scenario').onchange = e => { sim.scen = e.target.value; if (sim.scen !== 'auto') { sim.t = 0; sim.forzarParo = 800; } };
+
+$('simArranque').onclick = () => { sim.forzarParo = sim.t + 1200; };   // parada de 1,2 s y nuevo arranque
+
+/* ---------- controles de la onda de corriente ---------- */
+document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
+  W.vista = b.dataset.iv;
+  document.querySelectorAll('[data-iv]').forEach(x => x.classList.toggle('on', x === b));
+  $('cW').hidden = W.vista === 'rms'; $('cI').hidden = W.vista !== 'rms';
+  $('ondaOpc').hidden = W.vista === 'rms'; $('ondaCapBox').hidden = W.vista !== 'arranque';
+  const v = $('ondaVen'); if (W.vista === 'vivo' && W.ven > 500) { v.value = '200'; W.ven = 200; }
+  if (W.vista === 'arranque' && W.ven < 200) { v.value = '1000'; W.ven = 1000; }
+  dirty = true;
+});
+$('ondaVen').onchange = e => { W.ven = Number(e.target.value); dirty = true; };
+$('ondaF').onchange = e => { W.f = Number(e.target.value); dirty = true; };
+$('ondaCap').onchange = () => { mostrarStats(); dirty = true; };
+$('capturar').onclick = () => { if (W.lastT >= 0 && !W.cap) iniciarCaptura(W.lastT, false); };
+$('dlOnda').onclick = () => {
+  const c = W.caps[Number($('ondaCap').value) || 0]; if (!c) return;
+  const out = ['﻿t_ms;I_RMS_medida_A;i_equivalente_A;nota'];
+  c.pts.forEach((p, k) => out.push([ (p.t - c.trig).toFixed(0), fin(p.v) ? p.v.toFixed(3) : '',
+    fin(p.v) ? (Math.SQRT2 * p.v * Math.sin(2 * Math.PI * W.f * (p.t - c.trig) / 1000)).toFixed(3) : '',
+    k === 0 ? `"i_equivalente = raiz(2)*I_RMS*sen(2*pi*${W.f}*t): onda calculada, el JXK-10 mide valor RMS"` : ''].join(';')));
+  download(`motor_arranque_${fileStamp()}.csv`, out.join('\r\n') + '\r\n', 'text/csv;charset=utf-8');
+};
 
 /* ---------- controles ---------- */
 document.querySelectorAll('[data-win]').forEach(b => b.onclick = () => {
@@ -527,6 +714,7 @@ $('clearBtn').onclick = () => {
   if (!rows.length && !events.length) return;
   if (!confirm('¿Borrar todas las muestras y eventos de esta sesión? Descargue los datos antes si los necesita.')) return;
   rows.length = 0; events.length = 0; st.missing = 0; resetFilters(); renderLog();
+  W.pts.length = 0; W.caps.length = 0; W.cap = null; W.lastT = -1; pintarCapturas(0);
   $('nRows').textContent = '0 muestras'; $('nLoss').textContent = ''; ['dlCsv','dlJson'].forEach(id => $(id).disabled = true); dirty = true;
 };
 function applyTheme(t){ document.documentElement.dataset.theme = t; store.set('mc-theme', t); readColors(); dirty = true; }

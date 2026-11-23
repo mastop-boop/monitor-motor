@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Monitor de Condición · Motor de inducción</title>
-<link rel="stylesheet" href="monitor.css?v=2">
+<link rel="stylesheet" href="monitor.css?v=4">
 </head>
 <body>
 
@@ -40,6 +40,7 @@
       </select>
     </label>
     <span id="scenNow" class="muted"></span>
+    <button type="button" class="btn ghost" id="simArranque">↻ Simular arranque</button>
   </div>
 </div>
 
@@ -229,6 +230,38 @@
 
   <section class="row2 charts">
     <article class="card">
+      <div class="chead">
+        <div><span class="eyebrow">Transmisor JXK-10 · 500 muestras/s</span><h2>Corriente del motor</h2></div>
+        <div class="onda-ctrl">
+          <div class="seg" role="group" aria-label="Vista de corriente">
+            <button type="button" data-iv="arranque" class="on">Arranque</button>
+            <button type="button" data-iv="vivo">Onda en vivo</button>
+            <button type="button" data-iv="rms">Tendencia RMS</button>
+          </div>
+          <span id="ondaOpc" class="onda-ctrl">
+            <label>Ventana <select id="ondaVen">
+              <option value="100">100 ms</option><option value="200">200 ms</option><option value="500">500 ms</option>
+              <option value="1000" selected>1 s</option><option value="3000">3 s</option></select></label>
+            <label>Red <select id="ondaF"><option value="60" selected>60 Hz</option><option value="50">50 Hz</option></select></label>
+          </span>
+          <span id="ondaCapBox" class="onda-ctrl">
+            <select id="ondaCap" aria-label="Capturas de arranque"><option>Sin capturas</option></select>
+            <button type="button" class="btn ghost" id="capturar">● Capturar ahora</button>
+            <button type="button" class="btn ghost" id="dlOnda" disabled>↓ CSV</button>
+          </span>
+        </div>
+      </div>
+      <canvas id="cW" class="chart" aria-label="Forma de onda equivalente de la corriente"></canvas>
+      <canvas id="cI" class="chart" aria-label="Corriente RMS en el tiempo" hidden></canvas>
+      <div class="wstats">
+        <div><span class="eyebrow">Pico instantáneo equivalente</span><strong id="wPico">—</strong></div>
+        <div><span class="eyebrow">I RMS máxima de arranque</span><strong id="wMax">—</strong></div>
+        <div><span class="eyebrow">I RMS en régimen</span><strong id="wReg">—</strong></div>
+        <div><span class="eyebrow">Arranque / régimen</span><strong id="wRel">—</strong></div>
+      </div>
+      <p class="note">Onda sinusoidal equivalente i(t) = √2 · I<sub>RMS</sub>(t) · sen(2πft): la amplitud es la corriente RMS medida cada 2 ms; la forma sinusoidal es ideal, porque el JXK-10 entrega el valor RMS y no la onda instantánea. El arranque se captura automáticamente (3 s) cuando la corriente sube desde reposo. <span class="muted" id="iStats"></span></p>
+    </article>
+    <article class="card">
       <div class="chead"><div><span class="eyebrow">Tendencia · ADXL345</span><h2>Vibración por eje</h2></div>
         <div class="legend"><b class="cx">● X</b><b class="cy">● Y</b><b class="cz">● Z</b><span class="muted">mg · franjas = zonas de severidad</span></div></div>
       <canvas id="cV" class="chart" aria-label="Vibración por eje en el tiempo"></canvas>
@@ -236,10 +269,6 @@
     <article class="card">
       <div class="chead"><div><span class="eyebrow">Tendencia</span><h2>Temperatura del bobinado</h2></div><span class="muted small" id="tStats"></span></div>
       <canvas id="cT" class="chart" aria-label="Temperatura en el tiempo"></canvas>
-    </article>
-    <article class="card">
-      <div class="chead"><div><span class="eyebrow">Tendencia</span><h2>Corriente del motor</h2></div><span class="muted small" id="iStats"></span></div>
-      <canvas id="cI" class="chart" aria-label="Corriente en el tiempo"></canvas>
     </article>
   </section>
 
@@ -292,6 +321,6 @@
   </footer>
 </main>
 
-<script src="monitor.js?v=2"></script>
+<script src="monitor.js?v=5"></script>
 </body>
 </html>
