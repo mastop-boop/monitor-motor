@@ -241,10 +241,15 @@
           <span id="ondaOpc" class="onda-ctrl">
             <label>Ventana <select id="ondaVen">
               <option value="100">100 ms</option><option value="200">200 ms</option><option value="500">500 ms</option>
-              <option value="1000" selected>1 s</option><option value="3000">3 s</option></select></label>
+              <option value="1000" selected>1 s</option><option value="3000">3 s</option><option value="5000">5 s</option>
+              <option value="10000">10 s</option><option value="30000">30 s</option><option value="60000">1 min</option>
+              <option value="300000">5 min</option><option value="all">Todo</option></select></label>
             <label>Red <select id="ondaF"><option value="60" selected>60 Hz</option><option value="50">50 Hz</option></select></label>
           </span>
           <span id="ondaCapBox" class="onda-ctrl">
+            <label>Capturar <select id="capDur" aria-label="Duración de la captura automática de arranque">
+              <option value="1000">1 s</option><option value="3000">3 s</option><option value="5000">5 s</option>
+              <option value="10000">10 s</option><option value="30000">30 s</option><option value="60000">1 min</option></select></label>
             <select id="ondaCap" aria-label="Capturas de arranque"><option>Sin capturas</option></select>
             <button type="button" class="btn ghost" id="capturar">● Capturar ahora</button>
             <button type="button" class="btn ghost" id="dlOnda" disabled>↓ CSV</button>
@@ -259,7 +264,7 @@
         <div><span class="eyebrow">I RMS en régimen</span><strong id="wReg">—</strong></div>
         <div><span class="eyebrow">Arranque / régimen</span><strong id="wRel">—</strong></div>
       </div>
-      <p class="note">Onda sinusoidal equivalente i(t) = √2 · I<sub>RMS</sub>(t) · sen(2πft): la amplitud es la corriente RMS medida cada 2 ms; la forma sinusoidal es ideal, porque el JXK-10 entrega el valor RMS y no la onda instantánea. El arranque se captura automáticamente (3 s) cuando la corriente sube desde reposo. <span class="muted" id="iStats"></span></p>
+      <p class="note">Onda sinusoidal equivalente i(t) = √2 · I<sub>RMS</sub>(t) · sen(2πft): la amplitud es la corriente RMS medida cada 2 ms; la forma sinusoidal es ideal, porque el JXK-10 entrega el valor RMS y no la onda instantánea. El arranque se captura automáticamente durante el tiempo elegido en «Capturar» cuando la corriente sube desde reposo. <span class="muted" id="iStats"></span></p>
     </article>
     <article class="card">
       <div class="chead"><div><span class="eyebrow">Tendencia · ADXL345</span><h2>Vibración por eje</h2></div>
@@ -321,6 +326,6 @@
   </footer>
 </main>
 
-<script src="monitor.js?v=5"></script>
+<script src="monitor.js?v=6"></script>
 </body>
 </html>

@@ -382,23 +382,37 @@ function drawChart(cv, o){
    El JXK-10 entrega el valor RMS (lazo 4-20 mA en DC). La onda que se dibuja
    es i(t) = √2 · I_RMS(t) · sen(2π·f·t): amplitud medida, forma sinusoidal ideal.
    ============================================================ */
-const W = {pts:[], cap:null, caps:[], quiet:0, lastT:-1, llegada:0, vista:'arranque', ven:1000, f:60};
+// pts: muestras de 2 ms (últimos 5 min) · dec: bloques de 100 ms con máximo y media (hasta 12 h)
+const RAW_MS = 310000, DEC_MAX = 432000;
+let durGuardada = 3000; try { durGuardada = Number(localStorage.getItem('mc-capdur')) || 3000; } catch {}
+const W = {pts:[], dec:[], blk:null, cap:null, caps:[], quiet:0, lastT:-1, llegada:0, vista:'arranque', ven:1000, f:60, dur:durGuardada, avisoCap:0};
+function cerrarBloque(){ const b = W.blk; if (b && b.n) { W.dec.push({t:b.t, max:b.max, mean:b.sum / b.n}); if (W.dec.length > DEC_MAX) W.dec.splice(0, W.dec.length - DEC_MAX); } W.blk = null; }
 function onLote(t0, dt, vals){
-  if (W.lastT >= 0 && t0 < W.lastT - 1000) { W.pts.length = 0; W.quiet = 0; W.lastT = -1; W.cap = null; }   // reinicio del ESP32 / cambio de fuente
+  if (W.lastT >= 0 && t0 < W.lastT - 1000) { W.pts.length = 0; W.dec.length = 0; W.blk = null; W.quiet = 0; W.lastT = -1; W.cap = null; }   // reinicio del ESP32 / cambio de fuente
   vals.forEach((v, k) => {
     const t = t0 + k * dt; if (t <= W.lastT) return;
     W.pts.push({t, v}); W.lastT = t;
+    if (fin(v)) {                                   // agregado de 100 ms para ventanas largas
+      const bt = Math.floor(t / 100) * 100;
+      if (!W.blk || W.blk.t !== bt) { cerrarBloque(); W.blk = {t:bt, max:v, sum:0, n:0}; }
+      W.blk.max = Math.max(W.blk.max, v); W.blk.sum += v; W.blk.n++;
+    }
     // disparo automático: motor quieto ≥ 200 ms y la corriente supera 0,6 A
     if (fin(v) && v < 0.3) W.quiet += dt; else if (fin(v) && v >= 0.6 && W.quiet >= 200 && !W.cap) iniciarCaptura(t, true);
     if (fin(v) && v >= 0.3) W.quiet = 0;
     if (W.cap) { if (t <= W.cap.fin) W.cap.pts.push({t, v}); else cerrarCaptura(); }
   });
-  while (W.pts.length && W.pts[0].t < W.lastT - 60000) W.pts.shift();
+  if (W.pts.length && W.pts[0].t < W.lastT - RAW_MS) W.pts.splice(0, idxDesde(W.pts, W.lastT - RAW_MS));
+  if (W.cap && performance.now() - W.avisoCap > 250) {
+    W.avisoCap = performance.now();
+    setConn(`● Capturando ${W.cap.auto ? 'arranque' : 'corriente'} ${((W.lastT - W.cap.trig) / 1000).toFixed(1)} / ${(W.dur / 1000).toFixed(0)} s`, 'live');
+  }
   W.llegada = performance.now(); dirty = true;
 }
+function idxDesde(arr, t){ let a = 0, b = arr.length; while (a < b) { const m = (a + b) >> 1; arr[m].t < t ? a = m + 1 : b = m; } return a; }
 function iniciarCaptura(t, auto){
   const pre = 10;
-  W.cap = {trig:t, ini:t - pre, fin:t + 3000, auto, ts:Date.now(), pts:W.pts.filter(p => p.t >= t - pre && p.t <= t)};
+  W.cap = {trig:t, ini:t - pre, fin:t + W.dur, dur:W.dur, auto, ts:Date.now(), pts:W.pts.slice(idxDesde(W.pts, t - pre)).filter(p => p.t <= t)};
   setConn(auto ? '● Arranque detectado · capturando corriente' : '● Capturando corriente', 'live');
 }
 function cerrarCaptura(){
@@ -407,7 +421,7 @@ function cerrarCaptura(){
   const v = c.pts.map(p => p.v).filter(fin);
   if (!v.length) return;
   const reg = c.pts.filter(p => p.t >= c.fin - 500).map(p => p.v).filter(fin);
-  c.imax = Math.max(...v); c.ireg = reg.length ? reg.reduce((a, b) => a + b, 0) / reg.length : NaN;
+  c.imax = v.reduce((m, x) => x > m ? x : m, -Infinity); c.ireg = reg.length ? reg.reduce((a, b) => a + b, 0) / reg.length : NaN;
   c.tmax = c.pts.find(p => p.v === c.imax).t - c.trig;
   W.caps.unshift(c); if (W.caps.length > 6) W.caps.pop();
   pintarCapturas(0);
@@ -434,73 +448,126 @@ function irmsEn(pts, t){                       // interpolación lineal del RMS 
   return q.t === p.t ? p.v : p.v + (q.v - p.v) * (t - p.t) / (q.t - p.t);
 }
 function pasoBonito(r){ const e = Math.pow(10, Math.floor(Math.log10(r))), m = r / e; return (m < 1.5 ? 1 : m < 3.5 ? 2 : m < 7.5 ? 5 : 10) * e; }
+function etiquetaT(ms, unidad){
+  if (unidad === 'ms') return String(Math.round(ms));
+  if (unidad === 's') return (Math.abs(ms) >= 10000 ? Math.round(ms / 1000) : Number((ms / 1000).toFixed(1))).toString();
+  const s = Math.round(Math.abs(ms) / 1000), m = Math.floor(s / 60);
+  return (ms < 0 ? '−' : '') + (m >= 60 ? `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:` : `${m}:`) + String(s % 60).padStart(2, '0');
+}
+function pasoTiempo(span, n, unidad){
+  if (unidad === 'ms') return pasoBonito(span / n);
+  if (unidad === 's') return pasoBonito(span / 1000 / n) * 1000;
+  const op = [15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 10800, 21600].map(s => s * 1000);
+  return op.find(p => p >= span / n) || op.at(-1);
+}
 function dibujarOnda(cv){
   const dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
   if (!w || !h) return;
   if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
   const g = cv.getContext('2d'); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
   const big = w >= 560, fs = big ? 14 : 12, ft = big ? 15 : 13;
-  // datos de la vista
-  let pts, a, b, ref, rel;
+  // ---- ventana de tiempo y fuente de datos
+  let pts, a, b, ref, rel, usarDec = false;
   if (W.vista === 'vivo') {
-    pts = W.pts; if (!pts.length) return vacio(g, w, h, fs, 'Esperando lotes de corriente del ESP32…');
-    // desplazamiento suave: se dibuja con 120 ms de retardo respecto al último lote
-    b = Math.min(W.lastT, W.lastT - 120 + (performance.now() - W.llegada)); a = b - W.ven; ref = 0; rel = b;
+    if (!W.pts.length) return vacio(g, w, h, fs, 'Esperando lotes de corriente del ESP32…');
+    b = Math.min(W.lastT, W.lastT - 120 + (performance.now() - W.llegada));      // desplazamiento suave
+    const ini = W.dec.length ? Math.min(W.dec[0].t, W.pts[0].t) : W.pts[0].t;
+    a = W.ven === Infinity ? ini : b - W.ven;
+    if (b - a < 50) a = b - 50;
+    pts = W.pts; ref = 0; rel = b;
+    usarDec = a < W.pts[0].t - 200;                // fuera del historial de 2 ms: bloques de 100 ms
   } else {
-    const c = W.cap && W.vista === 'arranque' && !W.caps.length ? W.cap : W.caps[Number($('ondaCap').value) || 0] || W.cap;
+    const c = W.caps[Number($('ondaCap').value) || 0] || W.cap;
     if (!c) return vacio(g, w, h, fs, 'Esperando un arranque del motor… (o pulse «Capturar ahora»)');
-    pts = c.pts; a = c.trig - 10; b = c.trig + W.ven; ref = c.trig; rel = c.trig;
+    pts = c.pts; a = c.trig - 10; b = W.ven === Infinity ? c.fin : Math.min(c.fin, c.trig + W.ven); ref = c.trig; rel = c.trig;
   }
-  const N = Math.min(24000, Math.max(800, Math.ceil((b - a) / (1000 / W.f / 24))));   // ≥ 24 puntos por ciclo
-  const ts = new Float64Array(N + 1), ys = new Float64Array(N + 1), env = new Float64Array(N + 1);
-  let amp = 0;
-  for (let k = 0; k <= N; k++) {
-    const t = a + (b - a) * k / N, r = irmsEn(pts, t);
-    ts[k] = t; env[k] = fin(r) ? Math.SQRT2 * r : NaN;
-    ys[k] = fin(r) ? env[k] * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN;
-    if (fin(env[k])) amp = Math.max(amp, env[k]);
-  }
-  const hi = Math.max(1, Math.ceil(amp * 1.12 / pasoBonito(amp * 1.12 / 3 || 1)) * pasoBonito(amp * 1.12 / 3 || 1)), lo = -hi;
+  const span = b - a;
   g.font = `${fs}px system-ui, sans-serif`;
-  const L = Math.max(54, g.measureText(`-${hi} A`).width + 16), R = w - 16, T = 14, B = h - (ft + 22);
-  const X = t => L + (t - a) * (R - L) / (b - a), Y = v => B - (v - lo) * (B - T) / (hi - lo);
-  // área de trazado
+  const L0 = 64, R = w - 16, T = 14, B = h - (ft + 22), cols = Math.max(100, Math.round(R - L0));
+  const ciclo = 1000 / W.f, comprimida = span / cols > ciclo / 3;   // más de 1/3 de ciclo por píxel
+  // ---- cálculo de la curva
+  let amp = 0, xs = [], ys = [], env = [];
+  if (!comprimida) {
+    const N = Math.min(24000, Math.max(800, Math.ceil(span / (ciclo / 24))));
+    for (let k = 0; k <= N; k++) {
+      const t = a + span * k / N, r = irmsEn(pts, t), e = fin(r) ? Math.SQRT2 * r : NaN;
+      xs.push(t); env.push(e); ys.push(fin(e) ? e * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN);
+      if (fin(e)) amp = Math.max(amp, e);
+    }
+  } else {
+    // envolvente por columna: √2 · I_RMS máxima dentro de cada intervalo de píxel
+    const src = usarDec ? W.dec : pts, val = usarDec ? (p => p.max) : (p => p.v);
+    let i = idxDesde(src, a);
+    for (let k = 0; k < cols; k++) {
+      const tb = a + span * (k + 1) / cols; let m = -1;
+      while (i < src.length && src[i].t < tb) { const v = val(src[i]); if (fin(v) && v > m) m = v; i++; }
+      const e = m >= 0 ? Math.SQRT2 * m : NaN;
+      xs.push(a + span * (k + .5) / cols); env.push(e); if (fin(e)) amp = Math.max(amp, e);
+    }
+  }
+  const pY = pasoBonito(Math.max(amp, 1) * 1.12 / 3), hi = Math.max(1, Math.ceil(Math.max(amp, .5) * 1.12 / pY) * pY), lo = -hi;
+  const L = Math.max(L0 - 10, g.measureText(`-${hi}`).width + 16);
+  const X = t => L + (t - a) * (R - L) / span, Y = v => B - (v - lo) * (B - T) / (hi - lo);
+  // ---- ejes
   g.fillStyle = C.plot; g.fillRect(L, T, R - L, B - T);
   const pasoY = pasoBonito((hi - lo) / 6);
-  g.lineWidth = 1; g.textAlign = 'right';
+  g.textAlign = 'right';
   for (let v = Math.ceil(lo / pasoY) * pasoY; v <= hi + 1e-9; v += pasoY) {
-    const y = Math.round(Y(v)) + .5;
-    g.strokeStyle = Math.abs(v) < 1e-9 ? C.muted : C.grid; g.lineWidth = Math.abs(v) < 1e-9 ? 1.5 : 1;
+    const y = Math.round(Y(v)) + .5, cero = Math.abs(v) < 1e-9;
+    g.strokeStyle = cero ? C.muted : C.grid; g.lineWidth = cero ? 1.5 : 1;
     g.beginPath(); g.moveTo(L, y); g.lineTo(R, y); g.stroke();
     g.fillStyle = C.muted; g.fillText(niceTick(v), L - 8, y + fs * .35);
   }
   g.fillStyle = C.ink; g.font = `700 ${ft}px system-ui, sans-serif`; g.textAlign = 'left'; g.fillText('A', 8, T + ft);
-  const pasoX = pasoBonito((b - a) / (big ? 12 : 6));
+  const unidad = span <= 3000 ? 'ms' : span <= 180000 ? 's' : 'min', paso = pasoTiempo(span, big ? 10 : 5, unidad);
   g.font = `600 ${ft}px system-ui, sans-serif`;
-  for (let t = Math.ceil((a - rel) / pasoX) * pasoX; t <= b - rel + 1e-9; t += pasoX) {
-    const x = Math.round(X(t + rel)) + .5;
+  for (let t = Math.ceil((a - rel) / paso) * paso; t <= b - rel + 1e-9; t += paso) {
+    const x = Math.round(X(t + rel)) + .5; if (x < L - 1 || x > R + 1) continue;
     g.strokeStyle = C.grid; g.lineWidth = 1; g.beginPath(); g.moveTo(x, T); g.lineTo(x, B); g.stroke();
-    g.fillStyle = C.muted; g.textAlign = 'center'; g.fillText(String(Math.round(t)), x, h - 10);
+    g.fillStyle = C.muted; g.textAlign = x < L + 30 ? 'left' : x > R - 30 ? 'right' : 'center'; g.fillText(etiquetaT(t, unidad), x, h - 10);
   }
-  g.fillStyle = C.ink; g.textAlign = 'right'; g.fillText('ms', R, T - 2 > ft ? T - 2 : h - 10 - ft - 2);
+  g.fillStyle = C.ink; g.textAlign = 'right';
+  g.fillText(unidad === 'min' ? 'min:s' : unidad, R, T + ft + 4);
   g.strokeStyle = C.line; g.lineWidth = 1; g.strokeRect(L + .5, T + .5, R - L - 1, B - T - 1);
-  // envolvente ±√2·I_RMS medida
+  // ---- trazado
   g.save(); g.beginPath(); g.rect(L, T, R - L, B - T); g.clip();
-  g.setLineDash([6, 5]); g.strokeStyle = C.envol; g.lineWidth = 1.4;
-  for (const s of [1, -1]) { g.beginPath(); let pen = false;
-    for (let k = 0; k <= N; k++) { if (!fin(env[k])) { pen = false; continue; } const x = X(ts[k]), y = Y(s * env[k]); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; } g.stroke(); }
-  g.setLineDash([]);
-  // onda
-  g.strokeStyle = C.onda; g.lineWidth = big ? 2.8 : 2.2; g.lineJoin = 'round'; g.beginPath(); let pen = false;
-  for (let k = 0; k <= N; k++) { if (!fin(ys[k])) { pen = false; continue; } const x = X(ts[k]), y = Y(ys[k]); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }
-  g.stroke(); g.restore();
-  // cursor
+  if (!comprimida) {
+    g.setLineDash([6, 5]); g.strokeStyle = C.envol; g.lineWidth = 1.4;
+    for (const s of [1, -1]) { g.beginPath(); let pen = false;
+      env.forEach((e, k) => { if (!fin(e)) { pen = false; return; } const x = X(xs[k]), y = Y(s * e); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; }); g.stroke(); }
+    g.setLineDash([]);
+    g.strokeStyle = C.onda; g.lineWidth = big ? 2.8 : 2.2; g.lineJoin = 'round'; g.beginPath(); let pen = false;
+    ys.forEach((v, k) => { if (!fin(v)) { pen = false; return; } const x = X(xs[k]), y = Y(v); pen ? g.lineTo(x, y) : g.moveTo(x, y); pen = true; });
+    g.stroke();
+  } else {
+    // banda rellena ±envolvente (a esta escala los ciclos de 60 Hz se funden en una banda)
+    let seg = [];
+    const pintar = () => { if (seg.length < 1) return;
+      g.beginPath(); seg.forEach(([x, e], k) => k ? g.lineTo(x, Y(e)) : g.moveTo(x, Y(e)));
+      for (let k = seg.length - 1; k >= 0; k--) g.lineTo(seg[k][0], Y(-seg[k][1]));
+      g.closePath(); g.globalAlpha = .45; g.fillStyle = C.onda; g.fill(); g.globalAlpha = 1;
+      g.strokeStyle = C.onda; g.lineWidth = 1.6;
+      for (const s of [1, -1]) { g.beginPath(); seg.forEach(([x, e], k) => k ? g.lineTo(x, Y(s * e)) : g.moveTo(x, Y(s * e))); g.stroke(); }
+      seg = []; };
+    env.forEach((e, k) => { if (fin(e)) seg.push([X(xs[k]), e]); else pintar(); }); pintar();
+    g.fillStyle = C.muted; g.font = `${fs - 1}px system-ui, sans-serif`; g.textAlign = 'left';
+    g.fillText(`Vista comprimida: banda = ±√2·I RMS máx por intervalo${usarDec ? ' (bloques de 100 ms)' : ''}`, L + 8, B - 8);
+  }
+  g.restore();
+  // ---- cursor
   const hx = hover[cv.id];
   if (hx != null && hx >= L && hx <= R) {
-    const t = a + (hx - L) * (b - a) / (R - L), r = irmsEn(pts, t), i = fin(r) ? Math.SQRT2 * r * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN;
+    const t = a + (hx - L) * span / (R - L);
+    let txt, yMark = NaN;
+    if (!comprimida) {
+      const r = irmsEn(pts, t), i = fin(r) ? Math.SQRT2 * r * Math.sin(2 * Math.PI * W.f * (t - ref) / 1000) : NaN; yMark = i;
+      txt = [`${etiquetaT(t - rel, unidad)} ${unidad === 'min' ? 'min:s' : unidad}`, `i equivalente: ${fmt(i, 2)} A`, `I RMS medida: ${fmt(r, 2)} A`];
+    } else {
+      const k = Math.max(0, Math.min(env.length - 1, Math.floor((t - a) / span * env.length))), e = env[k]; yMark = e;
+      txt = [`${etiquetaT(t - rel, unidad)} ${unidad === 'min' ? 'min:s' : unidad}`, `pico equivalente: ${fmt(e, 2)} A`, `I RMS máx: ${fmt(e / Math.SQRT2, 2)} A`];
+    }
     g.strokeStyle = C.muted; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(hx, T); g.lineTo(hx, B); g.stroke(); g.setLineDash([]);
-    if (fin(i)) { g.fillStyle = C.onda; g.beginPath(); g.arc(hx, Y(i), 4.5, 0, 7); g.fill(); }
-    const txt = [`${(t - rel).toFixed(1)} ms`, `i equivalente: ${fmt(i, 2)} A`, `I RMS medida: ${fmt(r, 2)} A`];
+    if (fin(yMark)) { g.fillStyle = C.onda; g.beginPath(); g.arc(hx, Y(yMark), 4.5, 0, 7); g.fill(); }
     g.font = `600 ${fs}px system-ui, sans-serif`;
     const lh = fs + 6, bw = Math.max(...txt.map(l => g.measureText(l).width)) + 20, bh = txt.length * lh + 10;
     let bx = hx + 12; if (bx + bw > R) bx = hx - bw - 12;
@@ -666,7 +733,7 @@ function setMode(mode){
   document.querySelectorAll('[data-mode]').forEach(b => b.classList.toggle('on', b.dataset.mode === mode));
   $('demoBar').hidden = mode !== 'demo';
   clearInterval(sim.timer); sim.timer = null;
-  W.pts.length = 0; W.lastT = -1; W.quiet = 0; W.cap = null;
+  W.pts.length = 0; W.dec.length = 0; W.blk = null; W.lastT = -1; W.quiet = 0; W.cap = null;
   if (mode === 'demo') { mqttStop(); setConn('● Simulación', 'demo'); sim.forzarParo = sim.t + 800; sim.timer = setInterval(simStep, 100); }
   else { st.lastAt = 0; mqttConnect(); }
 }
@@ -681,11 +748,11 @@ document.querySelectorAll('[data-iv]').forEach(b => b.onclick = () => {
   document.querySelectorAll('[data-iv]').forEach(x => x.classList.toggle('on', x === b));
   $('cW').hidden = W.vista === 'rms'; $('cI').hidden = W.vista !== 'rms';
   $('ondaOpc').hidden = W.vista === 'rms'; $('ondaCapBox').hidden = W.vista !== 'arranque';
-  const v = $('ondaVen'); if (W.vista === 'vivo' && W.ven > 500) { v.value = '200'; W.ven = 200; }
-  if (W.vista === 'arranque' && W.ven < 200) { v.value = '1000'; W.ven = 1000; }
   dirty = true;
 });
-$('ondaVen').onchange = e => { W.ven = Number(e.target.value); dirty = true; };
+$('ondaVen').onchange = e => { W.ven = e.target.value === 'all' ? Infinity : Number(e.target.value); dirty = true; };
+$('capDur').value = String(W.dur);
+$('capDur').onchange = e => { W.dur = Number(e.target.value); try { localStorage.setItem('mc-capdur', W.dur); } catch {} };
 $('ondaF').onchange = e => { W.f = Number(e.target.value); dirty = true; };
 $('ondaCap').onchange = () => { mostrarStats(); dirty = true; };
 $('capturar').onclick = () => { if (W.lastT >= 0 && !W.cap) iniciarCaptura(W.lastT, false); };
@@ -714,7 +781,7 @@ $('clearBtn').onclick = () => {
   if (!rows.length && !events.length) return;
   if (!confirm('¿Borrar todas las muestras y eventos de esta sesión? Descargue los datos antes si los necesita.')) return;
   rows.length = 0; events.length = 0; st.missing = 0; resetFilters(); renderLog();
-  W.pts.length = 0; W.caps.length = 0; W.cap = null; W.lastT = -1; pintarCapturas(0);
+  W.pts.length = 0; W.dec.length = 0; W.blk = null; W.caps.length = 0; W.cap = null; W.lastT = -1; pintarCapturas(0);
   $('nRows').textContent = '0 muestras'; $('nLoss').textContent = ''; ['dlCsv','dlJson'].forEach(id => $(id).disabled = true); dirty = true;
 };
 function applyTheme(t){ document.documentElement.dataset.theme = t; store.set('mc-theme', t); readColors(); dirty = true; }
